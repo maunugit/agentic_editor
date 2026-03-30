@@ -31,10 +31,23 @@
 
 ## Phase 4 — Change Report & Output
 
-- Generate the structured JSON change report from recorded edits
-- Add toggle to enable/disable report generation
-- Ensure `before`/`after` fields are captured deterministically from actual text
-- End-to-end tests: instruction + file in → edited file + report out
+- [x] Generate the structured JSON change report from actual executed edits
+- [x] Keep report generation toggleable (`report=True/False`)
+- [x] Ensure `before`/`after` fields are captured deterministically from real file state, not from LLM output
+- [x] Improve `reason` semantics from generic placeholders to short audit-label style explanations
+- [x] First-pass `reason` strategy:
+  - [x] prefer concise edit-level reasons when available
+  - [x] keep a deterministic fallback if the model does not provide a usable reason
+- [x] Preserve accumulated report entries on incomplete runs as a partial audit trail
+- [x] Define incomplete-run output behavior clearly through `EditResult.status`, `final_message`, and `completed`
+- [ ] Add end-to-end tests for:
+  - [x] completed run with report enabled
+  - [x] run with `report=False`
+  - [x] multi-edit run with multiple `ChangeEntry` records
+  - [ ] incomplete run that still returns partial content plus partial report
+
+Note:
+- Partial/incomplete-run reporting is already implemented and covered at the agent-level, but a live end-to-end reproduction is still open because it is hard to trigger deterministically with the real model. For now this should be treated as a documented edge case to revisit later, rather than a blocker for core Phase 4 functionality.
 
 ## Phase 5 — Documentation & Packaging
 

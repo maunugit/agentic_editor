@@ -63,8 +63,26 @@ def test_edit_result_with_report():
     result = EditResult(content="hello", report=ChangeReport())
     assert result.content == "hello"
     assert result.report is not None
+    assert result.status == "done"
+    assert result.completed is True
+    assert result.final_message is None
 
 # If no report passed, defaults to None. If caller sets report=False
 def test_edit_result_without_report():
     result = EditResult(content="hello")
     assert result.report is None
+    assert result.status == "done"
+    assert result.completed is True
+
+
+def test_edit_result_with_explicit_status_fields():
+    result = EditResult(
+        content="partial",
+        report=None,
+        status="incomplete_max_turns",
+        final_message="Stopped after max turns",
+        completed=False,
+    )
+    assert result.status == "incomplete_max_turns"
+    assert result.final_message == "Stopped after max turns"
+    assert result.completed is False

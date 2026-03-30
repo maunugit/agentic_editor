@@ -28,7 +28,7 @@ class ChangeEntry:
             actual file text (not LLM output).
         after: The new content after the edit, captured from the actual file
             text. Empty string for delete operations.
-        reason: The LLM's explanation for why this edit was made.
+        reason: A short audit-label explanation for why this edit was made.
     """
     # These need to be provided by the caller. No default values exist.
     # The type annotations tell Python what each field should be. 
@@ -82,7 +82,13 @@ class EditResult:
     Attributes:
         content: The edited file content as a string.
         report: The structured change report (None if reporting was disabled).
+        status: Final agent status for this run.
+        final_message: Final model or runtime message describing completion or failure.
+        completed: Whether the agent completed successfully.
     """
 
-    content: str # no default, required
-    report: ChangeReport | None = None #optional, defaults to None
+    content: str
+    report: ChangeReport | None = None
+    status: str = "done"
+    final_message: str | None = None
+    completed: bool = True

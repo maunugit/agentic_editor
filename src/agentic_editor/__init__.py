@@ -31,7 +31,7 @@ async def edit_file(
     instruction: str,
     content: str,
     *,
-    model: str = "gemini-3.0", # 3.0 gemini instead of 2.5 flash
+    model: str = "gemini-2.5-flash",
     report: bool = True,
     max_retries: int = 3,
 ) -> EditResult:

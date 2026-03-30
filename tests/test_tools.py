@@ -7,7 +7,9 @@ import pytest
 from agentic_editor.tools import (
     ContentMismatchError,
     FileEditor,
+    InvalidLineRangeError,
     LineNumberError,
+    LineRangeTooLargeError,
 )
 
 
@@ -50,30 +52,94 @@ def test_get_line_out_of_range():
 # Tests four cases: single match, multi-match, zero match, invalid regex pattern.
 def test_regex_search_single_match():
     editor = FileEditor(SAMPLE_FILE)
-    matches = editor.regex_search(r'"version":\s*\d+')
-    assert len(matches) == 1
-    assert matches[0].line_number == 3
-    assert matches[0].match_text == '"version": 3'
+    result = editor.regex_search(r'"version":\s*\d+')
+    assert len(result.matches) == 1
+    assert result.total_matches == 1
+    assert result.truncated is False
+    assert result.matches[0].line_number == 3
+    assert result.matches[0].match_text == '"version": 3'
 
 
 def test_regex_search_multiple_matches():
     editor = FileEditor(SAMPLE_FILE)
-    matches = editor.regex_search(r'"id":\s*\d+')
-    assert len(matches) == 2
-    assert matches[0].line_number == 5
-    assert matches[1].line_number == 6
+    result = editor.regex_search(r'"id":\s*\d+')
+    assert len(result.matches) == 2
+    assert result.total_matches == 2
+    assert result.matches[0].line_number == 5
+    assert result.matches[1].line_number == 6
 
 
 def test_regex_search_no_matches():
     editor = FileEditor(SAMPLE_FILE)
-    matches = editor.regex_search(r"nonexistent_pattern")
-    assert matches == []
+    result = editor.regex_search(r"nonexistent_pattern")
+    assert result.matches == []
+    assert result.total_matches == 0
+    assert result.truncated is False
 
 
 def test_regex_search_invalid_pattern():
     editor = FileEditor(SAMPLE_FILE)
     with pytest.raises(re.error):
         editor.regex_search(r"[invalid")
+
+
+def test_regex_search_limits_results_and_marks_truncated():
+    editor = FileEditor(SAMPLE_FILE)
+    result = editor.regex_search(r'"id":\s*\d+', max_results=1)
+    assert len(result.matches) == 1
+    assert result.total_matches == 2
+    assert result.truncated is True
+    assert result.matches[0].line_number == 5
+
+
+def test_regex_search_truncates_line_preview():
+    editor = FileEditor(SAMPLE_FILE)
+    result = editor.regex_search(
+        r'"Check water depth before diving"',
+        preview_chars=20,
+    )
+    assert result.matches[0].line_content.endswith("...")
+    assert len(result.matches[0].line_content) == 20
+
+
+def test_regex_search_rejects_invalid_result_limits():
+    editor = FileEditor(SAMPLE_FILE)
+    with pytest.raises(ValueError, match="max_results must be at least 1"):
+        editor.regex_search(r'"id":\s*\d+', max_results=0)
+    with pytest.raises(ValueError, match="preview_chars must be at least 1"):
+        editor.regex_search(r'"id":\s*\d+', preview_chars=0)
+
+
+# Bounded line reads
+def test_get_lines_basic():
+    editor = FileEditor(SAMPLE_FILE)
+    lines = editor.get_lines(2, 4)
+    assert [line.line_number for line in lines] == [2, 3, 4]
+    assert [line.content for line in lines] == [
+        '  "title": "Water Safety Basics",',
+        '  "version": 3,',
+        '  "blocks": [',
+    ]
+
+
+def test_get_lines_rejects_invalid_range_order():
+    editor = FileEditor(SAMPLE_FILE)
+    with pytest.raises(InvalidLineRangeError):
+        editor.get_lines(4, 2)
+
+
+def test_get_lines_rejects_out_of_range_bounds():
+    editor = FileEditor(SAMPLE_FILE)
+    with pytest.raises(LineNumberError):
+        editor.get_lines(0, 2)
+    with pytest.raises(LineNumberError):
+        editor.get_lines(2, 99)
+
+
+def test_get_lines_rejects_oversized_range():
+    editor = FileEditor("\n".join(f"line{i}" for i in range(1, 26)))
+    with pytest.raises(LineRangeTooLargeError):
+        editor.get_lines(1, 21)
 
 
 # Replace
@@ -210,5 +276,5 @@ def test_search_after_edit_reflects_changes():
     """Regex search after an edit should reflect the updated content."""
     editor = FileEditor(SAMPLE_FILE)
     editor.replace(3, '  "version": 10,')
-    matches = editor.regex_search(r'"version":\s*\d+')
-    assert matches[0].match_text == '"version": 10'
+    result = editor.regex_search(r'"version":\s*\d+')
+    assert result.matches[0].match_text == '"version": 10'
