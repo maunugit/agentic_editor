@@ -19,3 +19,22 @@ build/
 # IDE
 .vscode/
 .idea/
+
+# Demo runtime state
+.last_file
+
+# Screenshots / media
+*.png
+
+# Temp test input files (created during local testing)
+replace planets with stars
+src/agentic_editor/test
+src/agentic_editor/test.txt
+src/agentic_editor/text
+src/agentic_editor/newtest.txt
+src/agentic_editor/newtest.txt\
+
+# Local demo/doc files (superseded by demos/ and docs_archive/ on main)
+demo.py
+CHANGES.md
+CODEBASE_GUIDE.md

@@ -32,10 +32,10 @@ Rules:
 - When calling replace_line or delete_line you MUST provide expected_content \
 to verify you are editing the correct line.
 - Work through one edit at a time. After each tool call, wait for the result before proceeding.
-- When you are done with all edits, respond with a text message starting with \
-"DONE:" followed by a brief summary of what was changed.
-- If the instruction is unclear or impossible to execute, respond with \
-"ERROR:" followed by an explanation.
+- When you are done with all edits, call finish_editing with status="done" and a brief \
+summary of what was changed. Never output plain text to signal completion.
+- If the instruction is unclear or impossible to execute, call finish_editing with \
+status="error" and an explanation of why.
 - Be concise. Do not explain your reasoning at length. Focus on executing the instruction.
 """
 
@@ -88,8 +88,12 @@ TOOL_DECLARATIONS = types.Tool(
                         type="STRING",
                         description="The current content of the line (for verification).",
                     ),
+                    "reason": types.Schema(
+                        type="STRING",
+                        description="Why this edit is being made (e.g. 'fix JSON syntax error').",
+                    ),
                 },
-                required=["line_number", "new_content", "expected_content"],
+                required=["line_number", "new_content", "expected_content", "reason"],
             ),
         ),
         types.FunctionDeclaration(
@@ -106,8 +110,12 @@ TOOL_DECLARATIONS = types.Tool(
                         type="STRING",
                         description="The current content of the line (for verification).",
                     ),
+                    "reason": types.Schema(
+                        type="STRING",
+                        description="Why this line is being deleted.",
+                    ),
                 },
-                required=["line_number", "expected_content"],
+                required=["line_number", "expected_content", "reason"],
             ),
         ),
         types.FunctionDeclaration(
@@ -130,13 +138,53 @@ TOOL_DECLARATIONS = types.Tool(
                         type="STRING",
                         description="The text for the new line.",
                     ),
+                    "reason": types.Schema(
+                        type="STRING",
+                        description="Why this line is being added.",
+                    ),
                 },
-                required=["after_line", "new_content"],
+                required=["after_line", "new_content", "reason"],
+            ),
+        ),
+        # ADDED: finish_editing replaces the fragile DONE:/ERROR: plain-text protocol.
+        # The enum constraint on `status` means Gemini's API validates the value before
+        # the response reaches our code — the model physically cannot pass anything other
+        # than "done" or "error". With plain-text parsing, startswith("DONE:") breaks
+        # whenever Gemini adds filler ("I've made all changes. DONE: ..."), which
+        # triggers a protocol_error even though the task completed successfully.
+        types.FunctionDeclaration(
+            name="finish_editing",
+            description=(
+                "Signal that the editing session is complete. "
+                "Always call this tool to end the session — never output plain text to signal completion."
+            ),
+            parameters=types.Schema(
+                type="OBJECT",
+                properties={
+                    "status": types.Schema(
+                        type="STRING",
+                        enum=["done", "error"],
+                        description=(
+                            "'done' if all edits completed successfully. "
+                            "'error' if the instruction is unclear or impossible to execute."
+                        ),
+                    ),
+                    "summary": types.Schema(
+                        type="STRING",
+                        description=(
+                            "Brief summary of what was changed (if done), "
+                            "or why editing could not proceed (if error)."
+                        ),
+                    ),
+                },
+                required=["status", "summary"],
             ),
         ),
     ]
 )
 
+
+# ????????Check this with the Team ???????
 # Maximum turns (each turn = one API call). Prevents infinite loops.
 MAX_AGENT_TURNS = 20
 
@@ -222,6 +270,7 @@ async def run_agent(
     )
 
     consecutive_errors = 0  # consecutive tool errors, reset on success
+    agent_status = "incomplete"  # updated when finish_editing is called
 
     # _turn means it needs a loop variable but doesn't use it
     # Loop runs at most 20 times (one API call per iter)
@@ -234,58 +283,82 @@ async def run_agent(
             config=config,
         )
 
+        # ADDED: Guard against empty candidates — the API can return an empty list
+        # in rare cases (e.g. safety filters). Without this, candidates[0] crashes.
+        if not response.candidates:
+            break
+
         candidate = response.candidates[0] # returns response candidates, take the first
 
-        # If the model responded with text only (no function calls), it's done
+        # If the model responded with plain text (no tool calls), something unexpected happened.
+        # The system prompt instructs Gemini to always call finish_editing instead of outputting text.
         if not _has_function_calls(candidate):
             break
 
-        # Add the model's response (containing function calls) to history
-        contents.append(candidate.content) # on next API call Gemini sees what it did before
+        # FIXED: Only execute the FIRST function call per turn.
+        # The original loop processed ALL function calls in one response, which is unsafe:
+        # if Gemini returns two edits at once, the second one uses line numbers from before
+        # the first edit ran — the file has shifted and it hits the wrong line.
+        # Taking only the first fc and looping back forces one edit per API call,
+        # so the model always sees the updated file state before its next move.
+        fc = next(
+            (part.function_call for part in candidate.content.parts if part.function_call is not None),
+            None,
+        )
+        if fc is None:
+            break
 
-        # Process each function call in the response
-        # Loop through any parts in response -> text, function calls
-        function_response_parts: list[types.Part] = []
-        for part in candidate.content.parts:
-            if part.function_call is None:
-                continue
-            # For each func call, extract name ("regex_search") and args ("pattern: X")
-            fc = part.function_call
-            # Then route it to the tool handler
-            result = _dispatch_tool(editor, fc.name, dict(fc.args), change_report)
+        args = dict(fc.args)
 
-            # If tool call failed, increment error counter
-            if result["status"] == "error":
-                consecutive_errors += 1
-                if consecutive_errors > max_retries:
-                    # Too many consecutive errors —> return what we have
-                    return EditResult(
-                        content=editor.content, report=change_report
-                    )
-            else:
-                consecutive_errors = 0
+        # finish_editing signals the end of the session — extract status and stop
+        if fc.name == "finish_editing":
+            agent_status = args.get("status", "done")
+            break
 
-            # Include updated file state so the model sees current line numbers
-            # If Gemini deletes a line, it sees the fresh new numbering in the future
-            result["current_file_state"] = _build_file_state_message(editor.content)
-
-            # Wrap the result in a FunctionResponse
-            function_response_parts.append(
-                types.Part(
-                    # check docs https://googleapis.github.io/python-genai/genai.html#genai.types.FunctionResponse 
-                    function_response=types.FunctionResponse( 
-                        name=fc.name,
-                        response=result,
-                    )
-                )
-            )
-
-        # Add all function responses as a single user message into convo history
+        # Append only the one function call we're executing to history
         contents.append(
-            types.Content(role="user", parts=function_response_parts)
+            types.Content(
+                role="model",
+                parts=[types.Part(function_call=types.FunctionCall(name=fc.name, args=args))],
+            )
         )
 
-    return EditResult(content=editor.content, report=change_report)
+        # Route it to the tool handler
+        result = _dispatch_tool(editor, fc.name, args, change_report)
+
+        # If tool call failed, increment error counter
+        if result["status"] == "error":
+            consecutive_errors += 1
+            if consecutive_errors > max_retries:
+                # Too many consecutive errors — return what we have
+                return EditResult(
+                    content=editor.content, report=change_report, status="incomplete"
+                )
+        else:
+            consecutive_errors = 0
+
+        # Include updated file state so the model sees current line numbers after edits.
+        # Skipped for regex_search — the file didn't change, no need to re-send it.
+        if fc.name != "regex_search":
+            result["current_file_state"] = _build_file_state_message(editor.content)
+
+        # Add the function response as a user message into convo history
+        contents.append(
+            types.Content(
+                role="user",
+                parts=[
+                    types.Part(
+                        # check docs https://googleapis.github.io/python-genai/genai.html#genai.types.FunctionResponse
+                        function_response=types.FunctionResponse(
+                            name=fc.name,
+                            response=result,
+                        )
+                    )
+                ],
+            )
+        )
+
+    return EditResult(content=editor.content, report=change_report, status=agent_status)
 
 
 # Tool dispatch
@@ -318,6 +391,10 @@ def _dispatch_tool(
             return _handle_delete(editor, args, change_report)
         elif name == "add_line":
             return _handle_add(editor, args, change_report)
+        elif name == "finish_editing":
+            # finish_editing is handled before _dispatch_tool is called.
+            # If it reaches here something went wrong in the routing logic.
+            return {"status": "error", "message": "finish_editing should not be dispatched here"}
         else:
             return {"status": "error", "message": f"Unknown tool: {name}"}
     except (LineNumberError, ContentMismatchError) as e:
@@ -361,7 +438,7 @@ def _handle_replace(
                 operation=OperationType.REPLACE,
                 before=before,
                 after=after,
-                reason=f"Replaced line {line_number}",
+                reason=args.get("reason", ""),
             )
         )
 
@@ -384,7 +461,7 @@ def _handle_delete(
                 operation=OperationType.DELETE,
                 before=before,
                 after="",
-                reason=f"Deleted line {line_number}",
+                reason=args.get("reason", ""),
             )
         )
 
@@ -407,7 +484,7 @@ def _handle_add(
                 operation=OperationType.ADD,
                 before="",
                 after=new_content,
-                reason=f"Added line after line {after_line}",
+                reason=args.get("reason", ""),
             )
         )
 

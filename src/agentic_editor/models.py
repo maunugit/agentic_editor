@@ -7,6 +7,7 @@ These objects don't do any editing themselves.
 
 from dataclasses import dataclass, field
 from enum import Enum
+from typing import Literal
 
 
 class OperationType(Enum):
@@ -82,7 +83,12 @@ class EditResult:
     Attributes:
         content: The edited file content as a string.
         report: The structured change report (None if reporting was disabled).
+        status: Outcome of the agent run.
+            "done"       — agent called finish_editing(status="done"), all edits completed.
+            "error"      — agent called finish_editing(status="error"), could not proceed.
+            "incomplete" — agent hit max turns or max retries without finishing.
     """
 
-    content: str # no default, required
-    report: ChangeReport | None = None #optional, defaults to None
+    content: str
+    report: ChangeReport | None = None
+    status: Literal["done", "error", "incomplete"] = "done"

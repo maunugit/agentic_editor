@@ -7,7 +7,7 @@ import os
 
 import pytest
 
-from agentic_editor import edit_file
+from agentic_editor import edit_file, OperationType
 
 pytestmark = pytest.mark.skipif(
     not os.environ.get("GEMINI_API_KEY"),
@@ -22,10 +22,18 @@ async def test_simple_replace():
         instruction='Replace "world" with "Earth" on the first line only.',
         content=content,
     )
+    # Content assertions
     assert "Hello Earth" in result.content
     assert "Goodbye world" in result.content
+
+    # Report assertions
     assert result.report is not None
     assert len(result.report.changes) >= 1
+    change = result.report.changes[0]
+    assert change.operation == OperationType.REPLACE
+    assert change.before == "Hello world"
+    assert change.after == "Hello Earth"
+    assert change.reason != ""
 
 
 async def test_delete_line():
@@ -35,9 +43,19 @@ async def test_delete_line():
         instruction='Delete the line that says "DELETE ME".',
         content=content,
     )
+    # Content assertions
     assert "DELETE ME" not in result.content
     assert "line one" in result.content
     assert "line three" in result.content
+
+    # Report assertions
+    assert result.report is not None
+    assert len(result.report.changes) >= 1
+    change = result.report.changes[0]
+    assert change.operation == OperationType.DELETE
+    assert change.before == "DELETE ME"
+    assert change.after == ""
+    assert change.reason != ""
 
 
 async def test_add_line():
@@ -47,8 +65,18 @@ async def test_add_line():
         instruction='Add a line saying "third" after the line that says "second".',
         content=content,
     )
+    # Content assertions
     lines = result.content.split("\n")
     assert "third" in lines
+
+    # Report assertions
+    assert result.report is not None
+    assert len(result.report.changes) >= 1
+    change = result.report.changes[0]
+    assert change.operation == OperationType.ADD
+    assert change.before == ""
+    assert change.after == "third"
+    assert change.reason != ""
 
 
 async def test_no_changes_needed():
@@ -61,6 +89,10 @@ async def test_no_changes_needed():
     # Content should be unchanged since the target doesn't exist
     assert "Hello world" in result.content
 
+    # Report should exist but be empty — no edits were made
+    assert result.report is not None
+    assert len(result.report.changes) == 0
+
 
 # ── Format-specific tests ───────────────────────────────────────────────────
 
@@ -72,10 +104,19 @@ async def test_json_fix_value():
         instruction='The planet_count is wrong. Change the value from 7 to 8.',
         content=content,
     )
+    # Content assertions
     assert '"planet_count": 8' in result.content
-    # Other fields should be untouched
     assert '"title": "The Solar System"' in result.content
     assert '"star": "The Sun"' in result.content
+
+    # Report assertions
+    assert result.report is not None
+    assert len(result.report.changes) >= 1
+    change = result.report.changes[0]
+    assert change.operation == OperationType.REPLACE
+    assert "7" in change.before
+    assert "8" in change.after
+    assert change.reason != ""
 
 
 async def test_json_multiline_fix():
@@ -98,10 +139,23 @@ async def test_json_multiline_fix():
         ),
         content=content,
     )
+    # Content assertions
     assert '"drafttt"' not in result.content
     assert '"draft"' in result.content
     assert '"Genetcs"' not in result.content
     assert '"Genetics"' in result.content
+
+    # Report assertions — 2 changes, search by before content since order may vary
+    assert result.report is not None
+    assert len(result.report.changes) >= 2
+    befores = [c.before for c in result.report.changes]
+    afters  = [c.after  for c in result.report.changes]
+    assert any("drafttt" in b for b in befores)
+    assert any("draft"   in a and "drafttt" not in a for a in afters)
+    assert any("Genetcs" in b for b in befores)
+    assert any("Genetics" in a for a in afters)
+    assert all(c.operation == OperationType.REPLACE for c in result.report.changes)
+    assert all(c.reason != "" for c in result.report.changes)
 
 
 async def test_html_fix_content():
@@ -125,12 +179,23 @@ async def test_html_fix_content():
         ),
         content=content,
     )
+    # Content assertions
     assert "Solar Sytem" not in result.content
     assert "Solar System" in result.content
     assert "7 planets" not in result.content
     assert "8 planets" in result.content
     assert "Saturn" not in result.content
     assert "Jupiter" in result.content
+
+    # Report assertions — 3 changes, search by before content
+    assert result.report is not None
+    assert len(result.report.changes) >= 3
+    befores = [c.before for c in result.report.changes]
+    assert any("Solar Sytem" in b for b in befores)
+    assert any("7 planets"   in b for b in befores)
+    assert any("Saturn"      in b for b in befores)
+    assert all(c.operation == OperationType.REPLACE for c in result.report.changes)
+    assert all(c.reason != "" for c in result.report.changes)
 
 
 async def test_markdown_fix_and_delete():
@@ -153,7 +218,22 @@ async def test_markdown_fix_and_delete():
         ),
         content=content,
     )
+    # Content assertions
     assert "Pyhton" not in result.content
     assert "# Introduction to Python" in result.content
     assert "TODO: REMOVE THIS LINE" not in result.content
     assert "- Easy to learn" in result.content
+
+    # Report assertions — 1 replace + 1 delete
+    assert result.report is not None
+    assert len(result.report.changes) >= 2
+    operations = [c.operation for c in result.report.changes]
+    befores    = [c.before    for c in result.report.changes]
+    assert OperationType.REPLACE in operations
+    assert OperationType.DELETE  in operations
+    assert any("Pyhton" in b for b in befores)
+    assert any("TODO"   in b for b in befores)
+    # The delete entry must have empty after
+    delete_change = next(c for c in result.report.changes if c.operation == OperationType.DELETE)
+    assert delete_change.after == ""
+    assert all(c.reason != "" for c in result.report.changes)

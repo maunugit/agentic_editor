@@ -65,3 +65,16 @@ async def test_edit_file_whitespace_instruction():
 async def test_edit_file_empty_content():
     with pytest.raises(ValueError, match="content must not be empty"):
         await edit_file(instruction="Fix it", content="")
+
+
+# checks that binary content (null bytes) raises ValueError
+async def test_edit_file_binary_content_null_bytes():
+    with pytest.raises(ValueError, match="binary"):
+        await edit_file(instruction="Fix it", content="hello\x00world")
+
+
+# checks that content with high ratio of non-printable characters raises ValueError
+async def test_edit_file_binary_content_non_printable():
+    binary_like = "".join(chr(i) for i in range(1, 32) if i not in (9, 10, 13)) * 10
+    with pytest.raises(ValueError, match="binary"):
+        await edit_file(instruction="Fix it", content=binary_like)
